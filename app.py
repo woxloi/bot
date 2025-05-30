@@ -1,102 +1,107 @@
-# app.py
-from flask import Flask, request, jsonify, send_from_directory
-from bs4 import BeautifulSoup
-import requests
 import os
 import json
-from datetime import datetime
+from flask import Flask, request, jsonify
+import subprocess
 
 app = Flask(__name__)
 
-# 会話履歴保存パス
-HISTORY_DIR = "history"
-os.makedirs(HISTORY_DIR, exist_ok=True)
+DATA_DIR = "data/history"
+os.makedirs(DATA_DIR, exist_ok=True)
+
+def get_session_path(session_id):
+    safe_session_id = session_id.replace("/", "_")  # 簡易サニタイズ
+    return os.path.join(DATA_DIR, f"{safe_session_id}.json")
+
+# Ollama呼び出し（例）
+def ollama_chat(messages):
+    # messagesは[{role: "user"/"assistant", content: "..."}]
+    # 実際のコマンドに合わせて修正してください
+    prompt = "\n".join([m["content"] for m in messages if m["role"] == "user"])
+    # ここは例示なので適宜実装してください
+    result = subprocess.run(
+        ["ollama", "chat", "modelname"], input=prompt.encode(), capture_output=True
+    )
+    return result.stdout.decode()
 
 @app.route("/api/chat", methods=["POST"])
 def chat():
     data = request.json
-    user_message = data["message"]
+    message = data.get("message", "")
     session_id = data.get("session_id", "default")
 
-    response = requests.post("http://localhost:11434/api/chat", json={
-        "model": "llama3",
-        "messages": [{"role": "user", "content": user_message}]
-    }).json()
+    # 履歴読み込み
+    path = get_session_path(session_id)
+    if os.path.exists(path):
+        with open(path, "r") as f:
+            history = json.load(f)
+    else:
+        history = []
 
-    reply = response["message"]["content"]
+    # 履歴にユーザーメッセージ追加
+    history.append({"role": "user", "content": message})
 
-    save_history(session_id, user_message, reply)
+    # Ollamaに投げる形式で整理
+    reply_text = ollama_chat(history)
 
-    return jsonify({"reply": reply})
+    # 履歴にAI返答追加
+    history.append({"role": "assistant", "content": reply_text})
 
-def save_history(session_id, user_message, reply):
-    path = os.path.join(HISTORY_DIR, f"{session_id}.json")
+    # 履歴保存
+    with open(path, "w") as f:
+        json.dump(history, f, ensure_ascii=False, indent=2)
+
+    return jsonify({"reply": reply_text})
+
+@app.route("/api/sessions")
+def sessions():
+    files = os.listdir(DATA_DIR)
+    sessions = [f[:-5] for f in files if f.endswith(".json")]
+    return jsonify(sessions)
+
+@app.route("/api/history/<session_id>", methods=["GET", "POST"])
+def history(session_id):
+    path = get_session_path(session_id)
+    if request.method == "POST":
+        # 新規セッション用に空ファイル作成
+        if not os.path.exists(path):
+            with open(path, "w", encoding="utf-8") as f:
+                json.dump([], f)
+        return jsonify({"status": "created"})
+
+    # GET時は履歴返す
     if os.path.exists(path):
         with open(path, "r", encoding="utf-8") as f:
             history = json.load(f)
     else:
         history = []
-    history.append({
-        "timestamp": datetime.now().isoformat(),
-        "user": user_message,
-        "bot": reply
-    })
-    with open(path, "w", encoding="utf-8") as f:
-        json.dump(history, f, ensure_ascii=False, indent=2)
 
-@app.route("/api/history/<session_id>")
-def get_history(session_id):
-    path = os.path.join(HISTORY_DIR, f"{session_id}.json")
-    if os.path.exists(path):
-        with open(path, "r", encoding="utf-8") as f:
-            history = json.load(f)
-        return jsonify(history)
-    else:
-        return jsonify([])
+    # クライアント用に簡易整形
+    simple = []
+    for msg in history:
+        if msg["role"] == "user":
+            simple.append({"user": msg["content"], "bot": ""})
+        elif msg["role"] == "assistant":
+            if simple:
+                simple[-1]["bot"] = msg["content"]
 
-@app.route("/api/sessions")
-def list_sessions():
-    sessions = [f.replace(".json", "") for f in os.listdir(HISTORY_DIR) if f.endswith(".json")]
-    return jsonify(sessions)
+    return jsonify(simple)
 
 @app.route("/api/explain_url", methods=["POST"])
 def explain_url():
-    url = request.json["url"]
-    res = requests.get(url)
-    soup = BeautifulSoup(res.text, "html.parser")
-
-    texts = [p.get_text() for p in soup.find_all("p")]
-    content = "\n".join(texts)[:3000]
-
-    prompt = f"次のウェブページの内容をわかりやすく解説してください：\n\n{content}"
-
-    llm_response = requests.post("http://localhost:11434/api/chat", json={
-        "model": "llama3",
-        "messages": [{"role": "user", "content": prompt}]
-    }).json()["message"]["content"]
-
-    return jsonify({"summary": llm_response})
+    data = request.json
+    url = data.get("url")
+    # URL解析・要約処理の例（ここはダミー）
+    summary = f"URL {url} の内容を解析・要約しました（ダミー）"
+    return jsonify({"summary": summary})
 
 @app.route("/api/speak", methods=["POST"])
 def speak():
-    text = request.json["text"]
-    speaker_id = 1  # ずんだもんのID（VOICEVOX）
-
-    qres = requests.post("http://localhost:50021/audio_query", params={"text": text, "speaker": speaker_id})
-    query = qres.json()
-
-    wav = requests.post("http://localhost:50021/synthesis", params={"speaker": speaker_id}, json=query)
-
-    path = "static/audio/zundamon.wav"
-    os.makedirs(os.path.dirname(path), exist_ok=True)
-    with open(path, "wb") as f:
-        f.write(wav.content)
-
-    return jsonify({"url": "/" + path})
-
-@app.route("/static/audio/<path:filename>")
-def serve_audio(filename):
-    return send_from_directory("static/audio", filename)
+    data = request.json
+    text = data.get("text", "")
+    # ずんだもんの音声生成処理（例）
+    # 生成したwav/mp3をstatic以下に保存しURLを返す想定
+    audio_url = "/static/zundamon_dummy.wav"
+    return jsonify({"url": audio_url})
 
 if __name__ == "__main__":
-    app.run(debug=True)
+    app.run(debug=True, port=5000)
