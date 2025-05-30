@@ -1,0 +1,158 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+  <meta charset="UTF-8">
+  <title>進化するAIチャット</title>
+  <style>
+    body {
+      margin: 0;
+      font-family: sans-serif;
+      display: flex;
+      height: 100vh;
+    }
+    #sidebar {
+      width: 250px;
+      background: #f0f0f0;
+      border-right: 1px solid #ccc;
+      padding: 10px;
+      box-sizing: border-box;
+    }
+    #chat {
+      flex: 1;
+      display: flex;
+      flex-direction: column;
+    }
+    #messages {
+      flex: 1;
+      overflow-y: auto;
+      padding: 10px;
+    }
+    #input-area {
+      display: flex;
+      padding: 10px;
+      border-top: 1px solid #ccc;
+    }
+    #input-area input {
+      flex: 1;
+      padding: 8px;
+    }
+    #input-area button {
+      margin-left: 10px;
+    }
+    .message { margin-bottom: 10px; }
+    .user { color: blue; }
+    .bot { color: green; }
+  </style>
+</head>
+<body>
+  <div id="sidebar">
+    <h3>セッション</h3>
+    <ul id="session-list"></ul>
+    <button onclick="newSession()">＋新規</button>
+    <hr>
+    <h3>URL解説</h3>
+    <input type="text" id="url-input" placeholder="https://example.com">
+    <button onclick="explainUrl()">解説</button>
+    <div id="url-summary"></div>
+    <hr>
+    <h3>設定</h3>
+    <label><input type="checkbox" id="voice-enabled"> 音声読み上げ</label>
+  </div>
+  <div id="chat">
+    <div id="messages"></div>
+    <div id="input-area">
+      <input id="message" placeholder="メッセージを入力...">
+      <button onclick="sendMessage()">送信</button>
+    </div>
+  </div>
+
+  <script>
+    let currentSession = "default";
+
+    async function loadSessions() {
+      const res = await fetch("/api/sessions");
+      const sessions = await res.json();
+      const list = document.getElementById("session-list");
+      list.innerHTML = "";
+      sessions.forEach(name => {
+        const li = document.createElement("li");
+        li.textContent = name;
+        li.onclick = () => selectSession(name);
+        list.appendChild(li);
+      });
+    }
+
+    async function selectSession(name) {
+      currentSession = name;
+      const res = await fetch(`/api/history/${name}`);
+      const history = await res.json();
+      const box = document.getElementById("messages");
+      box.innerHTML = "";
+      history.forEach(entry => {
+        addMessage("user", entry.user);
+        addMessage("bot", entry.bot);
+      });
+    }
+
+    function newSession() {
+      const name = prompt("セッション名を入力:");
+      if (name) {
+        currentSession = name;
+        loadSessions();
+        document.getElementById("messages").innerHTML = "";
+      }
+    }
+
+    function addMessage(role, text) {
+      const div = document.createElement("div");
+      div.className = "message " + role;
+      div.textContent = `${role === "user" ? "あなた: " : "AI: "}${text}`;
+      document.getElementById("messages").appendChild(div);
+    }
+
+    async function sendMessage() {
+      const input = document.getElementById("message");
+      const text = input.value;
+      if (!text) return;
+
+      addMessage("user", text);
+      input.value = "";
+
+      const res = await fetch("/api/chat", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ message: text, session_id: currentSession })
+      });
+
+      const data = await res.json();
+      addMessage("bot", data.reply);
+
+      if (document.getElementById("voice-enabled").checked) {
+        const speak = await fetch("/api/speak", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ text: data.reply })
+        });
+        const { url } = await speak.json();
+        const audio = new Audio(url);
+        audio.play();
+      }
+    }
+
+    async function explainUrl() {
+      const url = document.getElementById("url-input").value;
+      if (!url) return;
+      const res = await fetch("/api/explain_url", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ url })
+      });
+      const data = await res.json();
+      document.getElementById("url-summary").textContent = data.summary;
+    }
+
+    loadSessions();
+    selectSession(currentSession);
+  </script>
+</body>
+</html>
